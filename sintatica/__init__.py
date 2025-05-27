@@ -1,5 +1,5 @@
 import ply.yacc as yacc
-from lexico import tokens, build_lexer
+from lexico import tokens
 from .ast_nodes import *
 
 precedence = (

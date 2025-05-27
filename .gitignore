@@ -3,3 +3,6 @@ __pycache__/
 *.dot
 *.out
 *.txt
+*.sym
+*.tac
+.idea/
