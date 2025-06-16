@@ -1,3 +1,4 @@
+# compiler/semantic/visitor.py
 from .symbol_table import SymbolTable
 
 
@@ -12,9 +13,15 @@ class ASTVisitor:
         self.label_count += 1
         return label
 
+    def new_temp_location(self):
+        """Creates a new temporary variable location in a register-like format."""
+        offset = self.symbol_table.temp_var_count * 8  # Assuming 8 bytes per temp
+        self.symbol_table.temp_var_count += 1
+        return f"{offset:03d}(Rx)"
+
     def visit(self, node):
         if node is None:
-            return None, None
+            return None, None  # Return value/location and type
         method_name = f"visit_{node.type}"
         visitor = getattr(self, method_name, self.generic_visit)
         return visitor(node)
@@ -26,33 +33,45 @@ class ASTVisitor:
 
     def visit_program(self, node):
         self.visit(node.children[0])
+        return None, None
 
     def visit_statement_list(self, node):
         for stmt in node.children:
             self.visit(stmt)
+        return None, None
 
     def visit_expression_statement(self, node):
         self.visit(node.children[0])
+        return None, None
 
     def visit_assign(self, node):
         var_name = node.children[0].leaf
-        expr_result, expr_type = self.visit(node.children[1])
+        expr_location, expr_type = self.visit(node.children[1])
 
         symbol = self.symbol_table.get_symbol(var_name)
         if not symbol:
+            # First, add the symbol to the table.
             self.symbol_table.add_symbol(var_name, expr_type)
-        elif symbol["type"] != expr_type:
+            # Then, retrieve the newly created symbol object.
+            symbol = self.symbol_table.get_symbol(var_name)
+        elif symbol["type"] != expr_type and expr_type is not None:
             print(
                 f"Warning: Type mismatch for '{var_name}'. Assigning new type {expr_type}."
             )
             symbol["type"] = expr_type
 
+        var_location = f"{symbol['offset']:03d}(SP)"
+
         op = node.leaf
         if op == "=":
-            self.tac_code.append(f"{var_name} := {expr_result}")
-        else:
-            op_map = {"+=": "+", "-=": "-", "*=": "*", "/=": "/"}
-            self.tac_code.append(f"{var_name} := {var_name} {op_map[op]} {expr_result}")
+            self.tac_code.append(f"{var_location} := {expr_location}")
+        else:  # For +=, -=, etc.
+            op_map = {"+=": "ADD", "-=": "SUB", "*=": "MUL", "/=": "DIV"}
+            temp_reg = self.new_temp_location()
+            self.tac_code.append(
+                f"{temp_reg} := {var_location} {op_map[op]} {expr_location}"
+            )
+            self.tac_code.append(f"{var_location} := {temp_reg}")
 
         return None, None
 
@@ -126,20 +145,36 @@ class ASTVisitor:
         return None, None
 
     def visit_bin_op(self, node):
+        op_map = {
+            "+": "ADD",
+            "-": "SUB",
+            "*": "MUL",
+            "/": "DIV",
+            "%": "MOD",
+            "==": "EQ",
+            "!=": "NE",
+            "<": "LT",
+            "<=": "LE",
+            ">": "GT",
+            ">=": "GE",
+        }
+        op = op_map.get(node.leaf, node.leaf.upper())
+
         left_val, left_type = self.visit(node.children[0])
         right_val, right_type = self.visit(node.children[1])
-        temp = self.symbol_table.new_temp()
+
+        temp_location = self.new_temp_location()
 
         result_type = "Float" if "Float" in (left_type, right_type) else "Integer"
 
-        self.tac_code.append(f"{temp} := {left_val} {node.leaf} {right_val}")
-        return temp, result_type
+        self.tac_code.append(f"{temp_location} := {left_val} {op} {right_val}")
+        return temp_location, result_type
 
     def visit_unary_op(self, node):
         operand_val, operand_type = self.visit(node.children[0])
-        temp = self.symbol_table.new_temp()
-        self.tac_code.append(f"{temp} := {node.leaf}{operand_val}")
-        return temp, operand_type
+        temp_location = self.new_temp_location()
+        self.tac_code.append(f"{temp_location} := 0 SUB {operand_val}")
+        return temp_location, operand_type
 
     def visit_integer(self, node):
         return node.leaf, "Integer"
@@ -154,5 +189,7 @@ class ASTVisitor:
         symbol = self.symbol_table.get_symbol(node.leaf)
         if not symbol:
             print(f"Error: Variable '{node.leaf}' not defined.")
-            return node.leaf, "Undefined"  # Error case
-        return node.leaf, symbol["type"]
+            return node.leaf, "Undefined"
+
+        location = f"{symbol['offset']:03d}(SP)"
+        return location, symbol["type"]
