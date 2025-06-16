@@ -1,95 +1,73 @@
-from lexico import build_lexer
+import sys
+import os
 
-from sintatica import parse
-from sintatica.ast_graphviz import generate_dot_for_ast
+# Adjust path to import from subdirectories
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from semantica import generate_symbol_table_from_ast, generate_tac
-
-from sys import argv, exit
-
-from traceback import print_exc
-
-
-def tokenize_file(input_file, output_file, lexer):
-    with open(input_file) as f:
-        data = f.read()
-
-    print("\n===== LEXICAL ANALYSIS =====")
-    lexer.input(data)
-
-    tokens_found = []
-    while True:
-        tok = lexer.token()
-        if not tok:
-            break
-        last_cr = data.rfind("\n", 0, tok.lexpos)
-        column = tok.lexpos - last_cr if last_cr != -1 else tok.lexpos + 1
-        tokens_found.append((tok.type, tok.value, tok.lineno, column))
-
-    with open(f"{output_file}.txt", "w") as out_file:
-        for token in tokens_found:
-            out_file.write(
-                f"{token[0]:<10}: {token[1]:<50} line {token[2]:<2} column {token[3]:<2}\n"
-            )
-
-    print("TOKENS WRITTEN TO FILE " + f"{output_file}.txt")
-
-
-def parse_file(input_file, output_file, lexer):
-    with open(input_file) as f:
-        data = f.read()
-
-    print("\n===== PARSING =====")
-    ast = parse(data, lexer)
-    generate_dot_for_ast(ast, output_file)
-
-    return ast
-
-
-def semantica(ast, output_file):
-    print("\n===== SEMANTIC ANALYSIS =====")
-    tac = generate_tac(ast)
-    with open(f"{output_file}.tac", "w") as tac_file:
-        tac_file.write(tac)
-
-    print("TAC WRITTEN TO FILE " + f"{output_file}.tac")
-
-    symbol_table = generate_symbol_table_from_ast(ast)
-
-    with open(f"{output_file}.sym", "w") as sym_file:
-        sym_file.write(symbol_table.print_table())
-
-    print("SYMBOL TABLE WRITTEN TO FILE " + f"{output_file}.sym")
-
+from lexer.lexer import lexer
+from syntactic.parser import parser
+from semantic.visitor import ASTVisitor
+from utils.dot_generator import generate_dot
 
 if __name__ == "__main__":
-    if len(argv) < 4:
-        print(
-            "Usage: python main.py [lexico|sintatico|semantico|all] <input_file> <output_file>"
-        )
-        exit(1)
+    if len(sys.argv) != 3:
+        print("Usage: python main.py <input_file> <output_file_prefix>")
+        sys.exit(1)
 
-    action = argv[1].lower()
-    input_file = argv[2]
-    output_file = argv[3]
+    input_file_path = sys.argv[1]
+    output_prefix = sys.argv[2]
 
     try:
-        lexer = build_lexer()
-        if action == "lexico":
-            tokenize_file(input_file, output_file, lexer)
-        elif action == "sintatico":
-            parse_file(input_file, output_file, lexer)
-        elif action == "semantico":
-            ast = parse_file(input_file, output_file, lexer)
-            semantica(ast, output_file)
-        elif action == "all":
-            tokenize_file(input_file, output_file, lexer)
-            ast = parse_file(input_file, output_file, lexer)
-            semantica(ast, output_file)
-        else:
-            print("Unknown action. Use 'lexico', 'sintatico', or 'all'.")
-    except Exception as e:
-        print(f"Error: {e}")
-        print_exc()
+        with open(input_file_path, "r") as f:
+            code = f.read()
+    except FileNotFoundError:
+        print(f"Error: Input file '{input_file_path}' not found.")
+        sys.exit(1)
 
-    print("\n===== DONE =====")
+    lexer.input(code)
+    tokens_output_path = f"{output_prefix}_tokens.txt"
+    with open(tokens_output_path, "w") as f:
+        # Create a clone of the lexer for token output, as it's an iterator
+        lexer_clone = lexer.clone()
+        while True:
+            tok = lexer_clone.token()
+            if not tok:
+                break
+            # Calculate column
+            last_cr = code.rfind("\n", 0, tok.lexpos)
+            if last_cr < 0:
+                last_cr = 0
+            col = tok.lexpos - last_cr
+            f.write(
+                f"{tok.type:<10}: {tok.value:<20} line {tok.lineno:<5} column {col}\n"
+            )
+    print(f"Tokens saved to {tokens_output_path}")
+
+    ast = parser.parse(code, lexer=lexer)
+
+    if ast:
+
+        dot_output_path = f"{output_prefix}.dot"
+        with open(dot_output_path, "w") as f:
+            generate_dot(ast, f)
+        print(f"AST .dot file saved to {dot_output_path}")
+
+        visitor = ASTVisitor()
+        visitor.visit(ast)
+
+        symbol_table_output_path = f"{output_prefix}_symbol_table.txt"
+        with open(symbol_table_output_path, "w") as f:
+            f.write(visitor.symbol_table.to_string())
+        print(f"Symbol table saved to {symbol_table_output_path}")
+
+        tac_output_path = f"{output_prefix}.tac"
+        with open(tac_output_path, "w") as f:
+            f.write(f"{visitor.symbol_table.total_var_size}\n")
+            f.write(
+                f"{visitor.symbol_table.temp_var_count * 8}\n"
+            )  # Assuming 8 bytes per temp
+            for i, line in enumerate(visitor.tac_code):
+                f.write(f"{i:03d}: {line}\n")
+        print(f"TAC code saved to {tac_output_path}")
+    else:
+        print("Parsing failed. No output files generated.")

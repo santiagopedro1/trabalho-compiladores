@@ -1,8 +1,6 @@
 __pycache__/
-*.png
 *.dot
 *.out
 *.txt
-*.sym
 *.tac
 .idea/
